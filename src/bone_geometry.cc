@@ -34,6 +34,25 @@ void Skeleton::refreshCache(Configuration* target)
 		target = &cache;
 	target->rot.resize(joints.size());
 	target->trans.resize(joints.size());
+	bone_transforms.resize(bones.size());
+	for (size_t i = 0; i < bones.size(); i++) {
+		if (bones[i] != nullptr){
+			bone_transforms[i] = bones[i]->getCylinderTransform();
+			joints[bones[i]->parent_index].orientation = bones[i]->orientation;
+			joints[bones[i]->parent_index].rel_orientation = bones[i]->rel_orientation;
+		}
+	}
+
+	for (size_t i = 0; i < joints.size(); i++) {
+		if (joints[i].parent_index != -1){
+			joints[i].position = glm::vec3(bones[i]->deformed_transform * glm::inverse(bones[i]->undeformed_transform) * glm::vec4(joints[i].init_position,1.0));
+		} else {
+			int root_child = joints[i].children[0];
+			joints[i].position = glm::vec3(bones[root_child]->translation[3][0], bones[root_child]->translation[3][1],bones[root_child]->translation[3][2]);
+		}
+		
+	}
+
 	for (size_t i = 0; i < joints.size(); i++) {
 		target->rot[i] = joints[i].orientation;
 		target->trans[i] = joints[i].position;
@@ -50,7 +69,86 @@ const glm::fquat* Skeleton::collectJointRot() const
 	return cache.rot.data();
 }
 
+const glm::mat4* Skeleton::collectBoneTransforms() const
+{
+	return bone_transforms.data();
+}
+
+const glm::mat4* Skeleton::getBoneTransform(int bone_id) const
+{
+	return &bone_transforms[bone_id];;
+}
+
 // FIXME: Implement bone animation.
+
+void Skeleton::doTranslation(glm::vec3 diff_translation, int root_id){
+	std::cout << "translation" << root_id << std::endl;
+	Joint root = joints[root_id];
+	for (size_t i = 0; i < root.children.size(); i++){
+		bones[root.children[i]]->performTranslation(diff_translation);
+	}
+}
+
+void Skeleton::doAnimationTranslation(glm::vec3 diff_translation, int root_id){
+	Joint root = joints[root_id];
+	for (size_t i = 0; i < root.children.size(); i++){
+		bones[root.children[i]]->performAnimationTranslation(diff_translation);
+	}
+}
+
+
+
+Bone* Skeleton::getBone(int bone_id)
+{
+	return bones[bone_id];
+}
+
+
+void Skeleton::constructBone(int joint_id)
+{
+	if (joint_id <= 0 || bones[joint_id] != nullptr){
+		return;
+	}
+
+
+	Joint end_j = joints[joint_id];
+	if (end_j.parent_index == -1){
+		bones[joint_id] = nullptr;
+		return;
+	}
+	Joint start_j = joints[end_j.parent_index];
+	Bone *bone = new Bone(start_j, end_j);
+	joints[end_j.parent_index].children.emplace_back(end_j.joint_index);
+	bones[joint_id] = bone;
+	glm::vec3 diff;
+	if (start_j.parent_index >= 0){
+		bone->parent = bones[end_j.parent_index];
+		diff = start_j.position - joints[start_j.parent_index].position;
+	} else {
+		bone->parent = nullptr;
+		diff = start_j.position;
+	}
+	bone->translation = glm::mat4(1.0f);
+	bone->translation[3][0] = diff.x;
+	bone->translation[3][1] = diff.y;
+	bone->translation[3][2] = diff.z;
+	bone->init_translation = bone->translation;
+	if (start_j.parent_index == -1){
+		bone->undeformed_transform = bone->translation;
+		bone->deformed_transform = bone->translation * glm::toMat4(glm::normalize(bone->rel_orientation));
+		bone->root_joint_index = start_j.joint_index;
+	} else {
+		bone->undeformed_transform = (bone->parent)->undeformed_transform * bone->translation;
+		bone->deformed_transform = (bone->parent)->deformed_transform * bone->translation * glm::toMat4(glm::normalize(bone->rel_orientation));
+		bone->root_joint_index = bone->parent->root_joint_index;
+
+	}
+	if (bone->parent != nullptr) {
+		bone->parent->children.emplace_back(bone);
+	}
+	
+	
+}
 
 
 Mesh::Mesh()
@@ -72,6 +170,41 @@ void Mesh::loadPmd(const std::string& fn)
 	// FIXME: load skeleton and blend weights from PMD file,
 	//        initialize std::vectors for the vertex attributes,
 	//        also initialize the skeleton as needed
+	int id = 0;
+	int parent = 0;
+	glm::vec3 wcoord;
+
+	while (mr.getJoint(id, wcoord, parent)){
+		Joint joint = Joint(id, wcoord, parent);
+		skeleton.joints.emplace_back(joint);
+		id++;
+	}
+
+	skeleton.bones.resize(skeleton.joints.size());
+	for (uint i = 0 ; i < skeleton.joints.size(); i++){
+		if (skeleton.joints[i].parent_index == -1){
+			skeleton.bones[i] = nullptr;
+		}
+	}
+	//skeleton.bones[0] = nullptr;
+
+	for (uint i = 1; i < skeleton.joints.size(); i++){
+		skeleton.constructBone(i);
+	}
+
+
+	std::vector<SparseTuple> weights;
+	mr.getJointWeights(weights);
+
+	for (SparseTuple& sparse_tuple : weights) {
+		int v_id = sparse_tuple.vid;
+		joint0.emplace_back(sparse_tuple.jid0);
+		joint1.emplace_back(sparse_tuple.jid1);
+		weight_for_joint0.emplace_back(sparse_tuple.weight0);
+		vector_from_joint0.emplace_back(glm::vec3(vertices[v_id]) - skeleton.joints[sparse_tuple.jid0].position);
+		vector_from_joint1.emplace_back(glm::vec3(vertices[v_id]) - skeleton.joints[sparse_tuple.jid1].position);
+
+	}
 }
 
 int Mesh::getNumberOfBones() const
@@ -93,11 +226,187 @@ void Mesh::updateAnimation(float t)
 {
 	skeleton.refreshCache(&currentQ_);
 	// FIXME: Support Animation Here
+	int frame_id = floor(t);
+	std::cout << "time" << t << "id" << frame_id << std::endl;
+	if (t != -1.0 && frame_id + 1 < key_frames.size()){
+		float tao = t - frame_id;
+		KeyFrame frame;
+		KeyFrame::interpolate(key_frames[frame_id], key_frames[frame_id + 1], tao, frame);
+		updateSkeleton(frame);
+	}
+
+	//skeleton.refreshCache(&currentQ_);
 }
+
+void Mesh::updateSkeleton(KeyFrame key_frame){
+	for (uint i = 0; i < skeleton.joints.size(); i++){
+		skeleton.joints[i].rel_orientation = key_frame.rel_rot[i];
+	}
+
+	for (uint i = 0; i < skeleton.joints.size(); i++){
+		if (skeleton.joints[i].parent_index == -1){
+			skeleton.doAnimationTranslation(key_frame.root_trans, skeleton.joints[i].joint_index);
+			skeleton.joints[i].orientation = skeleton.joints[i].rel_orientation;
+			updateFromRel(skeleton.joints[i]);
+		}
+	}
+}
+
+void Mesh::updateFromRel(Joint& parent){
+	for (int child_id : parent.children){
+		Joint& child = skeleton.joints[child_id];
+		child.orientation = child.rel_orientation * parent.orientation;
+		//child.position = glm::vec3(skeleton.bones[child.joint_index]->deformed_transform * glm::inverse(skeleton.bones[child.joint_index]->undeformed_transform) * glm::vec4(child.init_position,1.0));
+		Bone* bone = skeleton.bones[child_id];
+		bone->rel_orientation = parent.rel_orientation;
+		bone->orientation = parent.orientation;
+		if (parent.parent_index == -1){
+			bone->deformed_transform =  bone->translation * glm::toMat4(bone->rel_orientation);
+		} else {
+			bone->deformed_transform = bone->parent->deformed_transform * bone->translation * glm::toMat4(bone->rel_orientation);
+		}
+
+		updateFromRel(child);
+		
+	}
+}
+
+Bone* Mesh::getBone(int bone_id){
+	return skeleton.getBone(bone_id);
+}
+
+
 
 const Configuration*
 Mesh::getCurrentQ() const
 {
 	return &currentQ_;
+}
+
+
+
+glm::mat4 Bone::getTranslation(){
+	return translation;
+}
+
+glm::mat4 Bone::getUndeformed(){
+	return undeformed_transform;
+}
+
+glm::mat4 Bone::getDeformed(){
+	return deformed_transform;
+}
+
+glm::fquat Bone::getOrientation(){
+	return orientation;
+}
+
+glm::fquat Bone::getRelOrientation(){
+	return rel_orientation;
+}
+
+
+glm::vec4 Bone::boneAlign(glm::vec4 bone_coor){
+	return alignMatrix * bone_coor;
+}
+
+glm::mat4 Bone::getCylinderTransform(){
+	glm::mat4 trans = deformed_transform * inverseAlignMatrix;
+	glm::mat4 scale = glm::mat4(1.0f);
+	scale[0][0] = length;
+	return trans * scale;
+}
+
+void Bone::performRotate(glm::fquat rotate_quat){
+	glm::mat4 previous_rel = glm::toMat4(rel_orientation);
+	glm::mat4 previous_ori = glm::toMat4(orientation);
+	glm::mat4 update_rel = glm::toMat4(rotate_quat) * previous_rel;
+	glm::mat4 update_ori = glm::toMat4(rotate_quat) * previous_ori;
+	rel_orientation = glm::normalize(glm::toQuat(update_rel));
+	orientation = glm::normalize(glm::toQuat(update_ori));
+
+	deformed_transform = deformed_transform * glm::inverse(previous_rel) * update_rel;
+
+	for (size_t i=0; i < children.size(); i++){
+		children[i]->performParentRotate();
+	}
+}
+
+void Bone::performRotateTotal(glm::fquat rotate_quat){
+	if (parent != nullptr){
+		for (size_t i = 0; i < parent->children.size(); i++){
+			Bone* child = parent->children[i];
+			child->performRotate(rotate_quat);
+		}
+	} else {
+		performRotate(rotate_quat);
+	}
+}
+
+
+void Bone::performParentRotate() {
+	deformed_transform = parent->deformed_transform * translation * glm::toMat4(rel_orientation);
+	glm::mat4 update_ori = glm::toMat4(parent->orientation) * glm::toMat4(rel_orientation);
+	orientation = glm::normalize(glm::toQuat(update_ori));
+	for (size_t i=0; i < children.size(); i++){
+		children[i]->performParentRotate();
+	}
+}
+
+void Bone::performTranslation(glm::vec3 diff_translation){
+	translation[3][0] += 20.0f * diff_translation.x;
+	translation[3][1] += 20.0f * diff_translation.y;
+	translation[3][2] += 20.0f * diff_translation.z;
+	deformed_transform = translation * glm::toMat4(glm::normalize(rel_orientation));
+	for (size_t i=0; i < children.size(); i++){
+		children[i]->performParentTranslation();
+	}
+}
+
+void Bone::performParentTranslation() {
+	deformed_transform = parent->deformed_transform * translation * glm::toMat4(glm::normalize(rel_orientation));
+	for (size_t i=0; i < children.size(); i++){
+		children[i]->performParentTranslation();
+	}
+}
+
+void Bone::performAnimationTranslation(glm::vec3 diff_translation){
+	translation = init_translation;
+	translation[3][0] +=  diff_translation.x;
+	translation[3][1] +=  diff_translation.y;
+	translation[3][2] +=  diff_translation.z;
+	deformed_transform = translation * glm::toMat4(glm::normalize(rel_orientation));
+	for (size_t i=0; i < children.size(); i++){
+		children[i]->performParentTranslation();
+	}
+}
+
+
+
+void KeyFrame::interpolate(const KeyFrame& from,
+                        const KeyFrame& to,
+                        float tau,
+                        KeyFrame& target) {
+	std::vector<glm::fquat> rel_rot_from = from.rel_rot;
+	std::vector<glm::fquat> rel_rot_to = to.rel_rot;
+	target.rel_rot.resize(rel_rot_from.size());
+	for (uint i = 0; i < target.rel_rot.size(); i++){
+		target.rel_rot[i] = glm::fastMix(rel_rot_from[i], rel_rot_to[i], tau);
+	}
+	target.root_trans = (1 - tau) * from.root_trans + tau * to.root_trans;
+}
+
+void Mesh::createKeyFrame(){
+	KeyFrame frame;
+	for (uint i = 0; i < skeleton.joints.size(); i++){
+		frame.rel_rot.emplace_back(skeleton.joints[i].rel_orientation);
+	}
+	frame.root_trans = skeleton.joints[0].position - skeleton.joints[0].init_position;
+	key_frames.emplace_back(frame);
+	if (key_frames.size() == 1){
+		for (uint i = 1; i < skeleton.bones.size(); i++){
+			skeleton.bones[i]->init_translation = skeleton.bones[i]->translation;
+		}
+	}
 }
 

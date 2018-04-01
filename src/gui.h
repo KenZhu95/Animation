@@ -4,6 +4,7 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <GLFW/glfw3.h>
+#include "tictoc.h"
 
 struct Mesh;
 
@@ -44,7 +45,7 @@ public:
 
 	bool isTransparent() const { return transparent_; }
 	bool isPlaying() const { return play_; }
-	float getCurrentPlayTime() const;
+	float getCurrentPlayTime();
 
 private:
 	GLFWwindow* window_;
@@ -58,6 +59,7 @@ private:
 	bool fps_mode_ = false;
 	bool pose_changed_ = true;
 	bool transparent_ = false;
+	bool translation_mode_ = false;
 	int current_bone_ = -1;
 	int current_button_ = -1;
 	float roll_speed_ = M_PI / 64.0f;
@@ -83,6 +85,8 @@ private:
 	bool captureWASDUPDOWN(int key, int action);
 
 	bool play_ = false;
+	float time_ = 0.0;
+	TicTocTimer timer_ = tic();
 };
 
 #endif
