@@ -66,3 +66,17 @@ void create_axes_mesh(LineMesh& axes_mesh)
 	axes_mesh.indices.push_back(glm::uvec2(0, 1));
 	axes_mesh.indices.push_back(glm::uvec2(0, 2));
 }
+
+void create_quads(std::vector<glm::vec4>& quad_vertices, std::vector<glm::uvec3>& quad_faces, std::vector<glm::vec2>& quad_indices)
+{
+	quad_vertices.emplace_back(glm::vec4(-1.0f,  1.0f, 0.0f, 1.0f));
+	quad_vertices.emplace_back(glm::vec4( 1.0f,  1.0f, 0.0f, 1.0f));
+	quad_vertices.emplace_back(glm::vec4( 1.0f, -1.0f, 0.0f, 1.0f));
+	quad_vertices.emplace_back(glm::vec4(-1.0f, -1.0f, 0.0f, 1.0f));
+	quad_faces.emplace_back(glm::uvec3(0, 2, 1));
+	quad_faces.emplace_back(glm::uvec3(0, 3, 2));
+	quad_indices.emplace_back(glm::vec2(0.0, 1.0));
+	quad_indices.emplace_back(glm::vec2(1.0, 1.0));
+	quad_indices.emplace_back(glm::vec2(1.0, 0.0));
+	quad_indices.emplace_back(glm::vec2(0.0, 0.0));
+}

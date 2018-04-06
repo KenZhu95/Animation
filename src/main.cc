@@ -21,14 +21,28 @@
 #include <glm/gtx/io.hpp>
 #include <debuggl.h>
 
-int window_width = 1280;
+#include <FL/Fl.H>
+#include <FL/Fl_Window.H>
+#include <FL/Fl_Box.H>
+
+int scroll_bar_width = 25;
+int scroll_bar_height = 720;
+int window_width = 1280 + scroll_bar_width;
 int window_height = 720;
 int main_view_width = 960;
 int main_view_height = 720;
-int preview_width = window_width - main_view_width; // 320
+int preview_width = window_width - main_view_width - scroll_bar_width; // 320
 int preview_height = preview_width / 4 * 3; // 320 / 4 * 3 = 240
 int preview_bar_width = preview_width;
 int preview_bar_height = main_view_height;
+
+const char* cmd = "ffmpeg -r 60 -f rawvideo -pix_fmt rgba -s 960x720 -i - "
+                  "-threads 0 -preset fast -y -pix_fmt yuv420p -crf 21 -vf vflip output.mp4";
+
+FILE* file_open;
+bool if_file_open = false;
+int* v_buffer = new int[main_view_width * main_view_height];
+
 const std::string window_title = "Animation";
 
 const char* vertex_shader =
@@ -68,6 +82,21 @@ const char* cylinder_fragment_shader =
 #include "shaders/cylinder.frag"
 ;
 
+const char* preview_vertex_shader = 
+#include "shaders/preview.vert"
+;
+
+const char* preview_fragment_shader = 
+#include "shaders/preview.frag"
+;
+
+const char* scroll_bar_vertex_shader = 
+#include "shaders/scroll_bar.vert"
+;
+
+const char* scroll_bar_fragment_shader = 
+#include "shaders/scroll_bar.frag"
+;
 
 void ErrorCallback(int error, const char* description) {
 	std::cerr << "GLFW Error: " << description << "\n";
@@ -132,6 +161,19 @@ int main(int argc, char* argv[])
 	}
 	mesh_center /= mesh.vertices.size();
 
+
+
+
+	int if_show_border = 0;
+	int if_show_cursor = 1;
+	int sampler = -1;
+	std::vector<glm::vec4> quad_vertices;
+	std::vector<glm::uvec3> quad_faces;
+	std::vector<glm::vec2> quad_indices;
+	create_quads(quad_vertices, quad_faces, quad_indices);
+
+	float get_frame_shift = 0.0;
+
 	/*
 	 * GUI object needs the mesh object for bone manipulation.
 	 */
@@ -179,6 +221,13 @@ int main(int argc, char* argv[])
 		glUniform4fv(loc, mesh.getNumberOfBones(), (const GLfloat*)data);
 	};
 
+	auto sampler_binder = [](int loc, const void* data) {
+		CHECK_GL_ERROR(glUniform1i(loc, 0));
+		CHECK_GL_ERROR(glActiveTexture(GL_TEXTURE0));
+		CHECK_GL_ERROR(glBindTexture(GL_TEXTURE_2D, (long)data));
+
+	};
+
 	/*
 	 * The lambda functions below are used to retrieve data
 	 */
@@ -218,7 +267,7 @@ int main(int argc, char* argv[])
 	};
 	// FIXME: add more lambdas for data_source if you want to use RenderPass.
 	//        Otherwise, do whatever you like here
-	
+
 	auto bone_transform_data = [&mesh, &gui]() -> const void* {
 		auto bone_transform_matrix = mesh.skeleton.getBoneTransform(gui.getCurrentBone());
 		return &bone_transform_matrix[0][0];
@@ -228,9 +277,40 @@ int main(int argc, char* argv[])
 	// auto bone_transform_data = [&bone_transform_matrix]() -> const void* {
 	// 	return &bone_transform_matrix[0][0];
 	// };
+	float radius_c = kCylinderRadius;
+	auto radius_data = [&radius_c]() -> const void* {
+		return &radius_c;
+	};
 
-	auto radius_data = [&kCylinderRadius]() -> const void* {
-		return &kCylinderRadius;
+	auto show_border_data = [&if_show_border]() -> const void* {
+		return &if_show_border;
+	};
+
+	auto show_cursor_data = [&if_show_cursor]() -> const void* {
+		return &if_show_cursor;
+	};
+
+	auto frame_shift_data = [&gui]() -> const void* {
+		static const float f_s = gui.getFrameShift();
+		return &f_s;
+	};
+
+	auto bar_frame_shift_data = [&get_frame_shift]() -> const void* {
+		return &get_frame_shift;
+	};
+
+	glm::mat4 ortho_matrix = glm::mat4(1.0f);
+	auto orthomat_data = [&ortho_matrix]() -> const void* {
+		return &ortho_matrix[0][0];
+	};
+
+	auto sampler_data = [&sampler]() -> const void* {
+		return (const void*)(intptr_t)sampler;
+	};
+	int num_preview = mesh.key_frames.size();
+	auto num_preview_data = [&num_preview]() -> const void* {
+		//static const int num_preview = mesh.key_frames.size();
+		return &num_preview;
 	};
 
 
@@ -245,6 +325,15 @@ int main(int argc, char* argv[])
 	ShaderUniform joint_rot = { "joint_rot", joint_rot_binder, joint_rot_data };
 	ShaderUniform bone_transform = { "bone_transform", matrix_binder, bone_transform_data };
 	ShaderUniform cylinder_radius = { "radius", float_binder, radius_data };
+
+	//for preview
+	ShaderUniform show_border = { "show_border", int_binder, show_border_data };
+	ShaderUniform show_cursor = { "show_cursor", int_binder, show_cursor_data };
+	ShaderUniform frame_shift = { "frame_shift", float_binder, frame_shift_data };
+	ShaderUniform bar_frame_shift = { "bar_frame_shift", float_binder, bar_frame_shift_data };
+	ShaderUniform orthomat = { "orthomat", matrix_binder, orthomat_data };
+	ShaderUniform sampler_2D = { "sampler", sampler_binder, sampler_data };
+	ShaderUniform number_preview = { "number_preview", int_binder, num_preview_data };
 	// FIXME: define more ShaderUniforms for RenderPass if you want to use it.
 	//        Otherwise, do whatever you like here
 
@@ -326,6 +415,28 @@ int main(int argc, char* argv[])
 			{ "fragment_color" }
 			);
 
+	//RenderPass object for preview
+	RenderDataInput preview_pass_input;
+	preview_pass_input.assign(0, "vertex_position", quad_vertices.data(), quad_vertices.size(), 4, GL_FLOAT);
+	preview_pass_input.assign(1, "tex_coord_in", quad_indices.data(), quad_indices.size(), 2, GL_FLOAT);
+	preview_pass_input.assignIndex(quad_faces.data(), quad_faces.size(), 3);
+	RenderPass preview_pass(-1, preview_pass_input,
+		{ preview_vertex_shader, nullptr, preview_fragment_shader },
+		{ orthomat, frame_shift, sampler_2D, show_border, show_cursor },
+		{ "fragment_color" }
+		);
+
+	//RenderPass object for scroll bar
+	RenderDataInput scroll_bar_pass_input;
+	scroll_bar_pass_input.assign(0, "vertex_position", quad_vertices.data(), quad_vertices.size(), 4, GL_FLOAT);
+	scroll_bar_pass_input.assign(1, "tex_coord_in", quad_indices.data(), quad_indices.size(), 2, GL_FLOAT);
+	scroll_bar_pass_input.assignIndex(quad_faces.data(), quad_faces.size(), 3);
+	RenderPass scroll_bar_pass(-1, scroll_bar_pass_input,
+		{ scroll_bar_vertex_shader, nullptr, scroll_bar_fragment_shader },
+		{ bar_frame_shift, number_preview },
+		{ "fragment_color" }
+		);
+
 	float aspect = 0.0f;
 	std::cout << "center = " << mesh.getCenter() << "\n";
 
@@ -336,6 +447,7 @@ int main(int argc, char* argv[])
 
 	if (argc >= 3) {
 		mesh.loadAnimationFrom(argv[2]);
+		gui.setLoadFromJson(true);
 	}
 
 	while (!glfwWindowShouldClose(window)) {
@@ -370,8 +482,154 @@ int main(int argc, char* argv[])
 		}
 
 		// FIXME: update the preview textures here
+		if (gui.isCreatingFrame()) {
+			TextureToRender* texture = new TextureToRender();
+			texture->create(preview_width, preview_height);
+			texture->bind();
+
+			if (draw_floor) {
+				floor_pass.setup();
+				// Draw our triangles.
+				CHECK_GL_ERROR(glDrawElements(GL_TRIANGLES,
+				                              floor_faces.size() * 3,
+				                              GL_UNSIGNED_INT, 0));
+			}
+
+			//Draw the model
+			if (draw_object) {
+				object_pass.setup();
+				int mid = 0;
+				while (object_pass.renderWithMaterial(mid))
+					mid++;
+	#if 0
+				// For debugging also
+				if (mid == 0) // Fallback
+					CHECK_GL_ERROR(glDrawElements(GL_TRIANGLES, mesh.faces.size() * 3, GL_UNSIGNED_INT, 0));
+	#endif
+			}
+
+			mesh.previews.emplace_back(texture);
+			texture->unbind();
+			gui.setCreateFrame(false);
+		}
+
+		if (gui.isDeletingFrame()) {
+			TextureToRender* texture = mesh.previews[gui.getCurrentFrame()];
+			mesh.previews.erase(mesh.previews.begin() + gui.getCurrentFrame());
+			delete texture;
+			gui.setDeleteFrame(false);
+		}
+
+		if (gui.isUpdatingFrame()) {
+			TextureToRender* texture = new TextureToRender();
+			texture->create(preview_width, preview_height);
+			texture->bind();
+
+			if (draw_floor) {
+				floor_pass.setup();
+				// Draw our triangles.
+				CHECK_GL_ERROR(glDrawElements(GL_TRIANGLES,
+				                              floor_faces.size() * 3,
+				                              GL_UNSIGNED_INT, 0));
+			}
+
+			//Draw the model
+			if (draw_object) {
+				object_pass.setup();
+				int mid = 0;
+				while (object_pass.renderWithMaterial(mid))
+					mid++;
+	#if 0
+				// For debugging also
+				if (mid == 0) // Fallback
+					CHECK_GL_ERROR(glDrawElements(GL_TRIANGLES, mesh.faces.size() * 3, GL_UNSIGNED_INT, 0));
+	#endif
+			}
+			TextureToRender* texture_prev = mesh.previews[gui.getCurrentFrame()];
+			delete texture_prev;
+			mesh.previews[gui.getCurrentFrame()] = texture;
+			texture->unbind();
+			gui.setUpdateFrame(false);
+		}
+
+		if (gui.isLoadingFromJson()) {
+			for (size_t i =0; i < mesh.key_frames.size(); i++) {
+				mesh.updateSkeleton(mesh.key_frames[i]);
+				mesh.updateAnimation();
+				TextureToRender* texture = new TextureToRender();
+				texture->create(preview_width, preview_height);
+				texture->bind();
+
+				if (draw_floor) {
+					floor_pass.setup();
+					// Draw our triangles.
+					CHECK_GL_ERROR(glDrawElements(GL_TRIANGLES,
+					                              floor_faces.size() * 3,
+					                              GL_UNSIGNED_INT, 0));
+				}
+
+				//Draw the model
+				if (draw_object) {
+					object_pass.setup();
+					int mid = 0;
+					while (object_pass.renderWithMaterial(mid))
+						mid++;
+		#if 0
+					// For debugging also
+					if (mid == 0) // Fallback
+						CHECK_GL_ERROR(glDrawElements(GL_TRIANGLES, mesh.faces.size() * 3, GL_UNSIGNED_INT, 0));
+		#endif
+				}
+
+				mesh.previews.emplace_back(texture);
+				texture->unbind();
+			}
+			mesh.updateSkeleton(mesh.key_frames[0]);
+			mesh.updateAnimation();
+			gui.setLoadFromJson(false);
+		}
+
+		if (gui.isInsertingFrame()) {
+			TextureToRender* texture = new TextureToRender();
+			texture->create(preview_width, preview_height);
+			texture->bind();
+
+			if (draw_floor) {
+				floor_pass.setup();
+				// Draw our triangles.
+				CHECK_GL_ERROR(glDrawElements(GL_TRIANGLES,
+				                              floor_faces.size() * 3,
+				                              GL_UNSIGNED_INT, 0));
+			}
+
+			//Draw the model
+			if (draw_object) {
+				object_pass.setup();
+				int mid = 0;
+				while (object_pass.renderWithMaterial(mid))
+					mid++;
+	#if 0
+				// For debugging also
+				if (mid == 0) // Fallback
+					CHECK_GL_ERROR(glDrawElements(GL_TRIANGLES, mesh.faces.size() * 3, GL_UNSIGNED_INT, 0));
+	#endif
+			}
+
+			std::vector<TextureToRender *>::iterator iterator = mesh.previews.begin();
+			mesh.previews.insert(iterator + gui.getCurrentFrame(), texture);
+			texture->unbind();
+			gui.setInsertFrame(false);
+		}
+
+		if (gui.isCursor()) {
+			if_show_cursor = 1;
+		} else {
+			if_show_cursor = 0;
+		}
 
 		int current_bone = gui.getCurrentBone();
+
+
 
 		// Draw bones first.
 		if (draw_skeleton && gui.isTransparent()) {
@@ -387,9 +645,7 @@ int main(int argc, char* argv[])
 
 		//Then draw cylinders.
 		if (draw_cylinder && gui.isTransparent()) {
-			std::cout << "draw cylinder begin" << std::endl;
 			cylinder_pass.setup();
-			std::cout << "draw cylinder" << std::endl;
 			CHECK_GL_ERROR(glDrawElements(GL_LINES,
                               cylinder_mesh.indices.size() * 2,
                               GL_UNSIGNED_INT, 0));
@@ -418,9 +674,59 @@ int main(int argc, char* argv[])
 		}
 
 		// FIXME: Draw previews here, note you need to call glViewport
+		for (int i = 0; i < (int)mesh.previews.size(); i++) {
+			glViewport(main_view_width, main_view_height - (i+1) * preview_height + gui.getFrameShift(), preview_width, preview_height);
+			sampler = mesh.previews[i]->getTexture();
+			if (i == gui.getCurrentFrame()) {
+				if_show_border = 1;
+			} else {
+				if_show_border = 0;
+			}
+			// if (gui.isCursor()) {
+			// 	if_show_cursor = 1;
+			// } else {
+			// 	if_show_cursor = 0;
+			// }
+			//std::cout << if_show_cursor << std::endl;
+			preview_pass.setup();
+			CHECK_GL_ERROR(glDrawElements(GL_TRIANGLES,
+			                              quad_faces.size() * 3,
+			                              GL_UNSIGNED_INT, 0));
+
+		}
+		glViewport(0, 0, main_view_width, main_view_height);
+
+		//Draw scroll bar
+		glViewport(main_view_width + preview_width, 0, scroll_bar_width, scroll_bar_height);
+		num_preview = mesh.key_frames.size();
+
+		scroll_bar_pass.setup();
+		get_frame_shift = gui.getFrameShift();
+		CHECK_GL_ERROR(glDrawElements(GL_TRIANGLES,
+			                              quad_faces.size() * 3,
+			                              GL_UNSIGNED_INT, 0));
+
 		// Poll and swap.
 		glfwPollEvents();
 		glfwSwapBuffers(window);
+
+		if (gui.isSavingVideo()) {
+			if (!if_file_open) {
+				file_open = popen(cmd, "w");
+				if_file_open = true;
+			}
+			
+
+			glReadPixels(0, 0, main_view_width, main_view_height, GL_RGBA, GL_UNSIGNED_BYTE, v_buffer);
+
+			fwrite(v_buffer, main_view_height * main_view_width * sizeof(int), 1, file_open);
+
+			if (gui.getCurrentPlayTime() > mesh.key_frames.size()-1.0) {
+				pclose(file_open);
+				gui.setSaveVideo(false);
+				if_file_open = false;
+			}
+		}
 	}
 	glfwDestroyWindow(window);
 	glfwTerminate();

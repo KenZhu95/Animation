@@ -26,6 +26,16 @@ std::ostream& operator<<(std::ostream& os, const BoundingBox& bounds)
 	return os;
 }
 
+glm::fquat splineQuat(glm::fquat q0, glm::fquat q1, glm::fquat q2, glm::fquat q3, float tau);
+glm::fquat splineQuat(glm::fquat q0, glm::fquat q1, glm::fquat q2, glm::fquat q3, float tau) {
+	glm::fquat s1 = q1 * glm::exp( (glm::log( glm::inverse(q1) * q2) + glm::log( glm::inverse(q1) * q0 ) )/(-4.0f));
+	glm::fquat s2 = q2 * glm::exp( (glm::log( glm::inverse(q2) * q3) + glm::log( glm::inverse(q2) * q1 ) )/(-4.0f));
+	glm::fquat temp_1 = glm::mix(q1, q2, tau);
+	glm::fquat temp_2 = glm::mix(s1, s2, tau);
+	glm::fquat result = glm::mix(temp_1, temp_2, 2.0f*tau*(1.0f-tau));
+	return result;
+}
+
 
 
 void Skeleton::refreshCache(Configuration* target)
@@ -82,7 +92,6 @@ const glm::mat4* Skeleton::getBoneTransform(int bone_id) const
 // FIXME: Implement bone animation.
 
 void Skeleton::doTranslation(glm::vec3 diff_translation, int root_id){
-	std::cout << "translation" << root_id << std::endl;
 	Joint root = joints[root_id];
 	for (size_t i = 0; i < root.children.size(); i++){
 		bones[root.children[i]]->performTranslation(diff_translation);
@@ -227,11 +236,16 @@ void Mesh::updateAnimation(float t)
 	skeleton.refreshCache(&currentQ_);
 	// FIXME: Support Animation Here
 	int frame_id = floor(t);
-	std::cout << "time" << t << "id" << frame_id << std::endl;
-	if (t != -1.0 && frame_id + 1 < key_frames.size()){
+	if (t != -1.0 && frame_id + 1 < (int)key_frames.size()){
 		float tao = t - frame_id;
 		KeyFrame frame;
-		KeyFrame::interpolate(key_frames[frame_id], key_frames[frame_id + 1], tao, frame);
+		if (isSpline()) {
+			KeyFrame::interpolate_spline(key_frames, t, frame);
+			KeyFrame::linear_trans(key_frames[frame_id], key_frames[frame_id + 1], tao, frame);
+		} else {
+			KeyFrame::interpolate(key_frames[frame_id], key_frames[frame_id + 1], tao, frame);
+		}
+		
 		updateSkeleton(frame);
 	}
 
@@ -396,6 +410,36 @@ void KeyFrame::interpolate(const KeyFrame& from,
 	target.root_trans = (1 - tau) * from.root_trans + tau * to.root_trans;
 }
 
+void KeyFrame::interpolate_spline(const std::vector<KeyFrame>& key_frames, float t, KeyFrame& target) {
+	//interpolate quartenioons with spherical spline interpolation, root_trans with natural cubic spline
+	for (uint i = 0; i < key_frames[0].rel_rot.size(); i++) {
+		std::vector<glm::fquat> bone_rels;
+		for (uint f_id = 0; f_id < key_frames.size(); f_id++) {
+			bone_rels.emplace_back(key_frames[f_id].rel_rot[i]);
+		}
+		glm::fquat spline_quat = calculateSplineQuat(bone_rels, t);
+		target.rel_rot.emplace_back(spline_quat);
+	}
+}
+
+void KeyFrame::linear_trans(const KeyFrame& from,
+                        const KeyFrame& to,
+                        float tau,
+                        KeyFrame& target) {
+	target.root_trans = (1 - tau) * from.root_trans + tau * to.root_trans;
+}
+
+glm::fquat KeyFrame::calculateSplineQuat(const std::vector<glm::fquat>& bone_rels, float t) {
+	int id_0 = glm::clamp<int>(t-1, 0, bone_rels.size()-1);
+	int id_1 = glm::clamp<int>(t, 0, bone_rels.size()-1);
+	int id_2 = glm::clamp<int>(t+1, 0, bone_rels.size()-1);
+	int id_3 = glm::clamp<int>(t+2, 0, bone_rels.size()-1);
+	float tau = t - floor(t);
+	return splineQuat(bone_rels[id_0], bone_rels[id_1], bone_rels[id_2], bone_rels[id_3], tau);
+	//return glm::fquat(1.0,0.0,0.0,0.0);
+}
+
+
 void Mesh::createKeyFrame(){
 	KeyFrame frame;
 	for (uint i = 0; i < skeleton.joints.size(); i++){
@@ -410,3 +454,48 @@ void Mesh::createKeyFrame(){
 	}
 }
 
+
+void Mesh::deleteKeyFrame(int frame_id){
+	key_frames.erase(key_frames.begin() + frame_id);
+}
+
+void Mesh::updateKeyFrame(int frame_id){
+	if (frame_id < 0){
+		return;
+	}
+	KeyFrame frame;
+	for (uint i = 0; i < skeleton.joints.size(); i++){
+		frame.rel_rot.emplace_back(skeleton.joints[i].rel_orientation);
+	}
+	frame.root_trans = skeleton.joints[0].position - skeleton.joints[0].init_position;
+	key_frames[frame_id] = frame;
+}
+
+void Mesh::spaceKeyFrame(int frame_id) {
+	updateSkeleton(key_frames[frame_id]);
+	skeleton.refreshCache(&currentQ_);
+}
+
+void Mesh::insertKeyFrame(int frame_id) {
+	KeyFrame frame;
+	for (uint i = 0; i < skeleton.joints.size(); i++){
+		frame.rel_rot.emplace_back(skeleton.joints[i].rel_orientation);
+	}
+	frame.root_trans = skeleton.joints[0].position - skeleton.joints[0].init_position;
+	std::vector<KeyFrame>::iterator iterator = key_frames.begin();
+	key_frames.insert(iterator+frame_id, frame);
+	if (frame_id == 0){
+		for (uint i = 1; i < skeleton.bones.size(); i++){
+			skeleton.bones[i]->init_translation = skeleton.bones[i]->translation;
+		}
+	}
+}
+
+// glm::fquat splineQuat(glm::fquat q0, glm::fquat q1, glm::fquat q2, glm::fquat q3, float tau) {
+// 	glm::fquat s1 = q1 * glm::exp( (glm::log( glm::inverse(q1) * q2) + glm::log( glm::inverse(q1) * q0 ) )/(-4.0f));
+// 	glm::fquat s2 = q2 * glm::exp( (glm::log( glm::inverse(q2) * q3) + glm::log( glm::inverse(q2) * q1 ) )/(-4.0f));
+// 	glm::fquat temp_1 = glm::mix(q1, q2, tau);
+// 	glm::fquat temp_2 = glm::mix(s1, s2, tau);
+// 	glm::fquat result = glm::mix(temp_1, temp_2, 2*tau*(1.0-tau));
+// 	return result;
+// }

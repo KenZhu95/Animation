@@ -218,6 +218,7 @@ void GUI::keyCallback(int key, int scancode, int action, int mods)
 	// FIXME: implement other controls here.
 	else if (key == GLFW_KEY_F && action != GLFW_RELEASE) {
 		mesh_->createKeyFrame();
+		if_create_frame = true;
 	} else if (key == GLFW_KEY_P && action != GLFW_RELEASE) {
 		if (!isPlaying()){
 			play_ = true;
@@ -229,6 +230,50 @@ void GUI::keyCallback(int key, int scancode, int action, int mods)
 		timer_ = tic();
 		time_ = 0.0;
 		play_ = true;
+	}  else if (key == GLFW_KEY_DELETE && action != GLFW_RELEASE) {
+		if (current_frame_ != -1) {
+			mesh_->deleteKeyFrame(current_frame_);
+			if_delete_frame = true;
+		}
+	} else if (key == GLFW_KEY_PAGE_UP && action != GLFW_RELEASE) {
+		currentFrameUp();
+	} else if (key == GLFW_KEY_PAGE_DOWN && action != GLFW_RELEASE) {
+		if (getCurrentFrame() < (int)mesh_->key_frames.size()-1){
+			currentFrameDown();
+		}
+	} else if (key == GLFW_KEY_U && action != GLFW_RELEASE) {
+		if (current_frame_ != -1) {
+			mesh_->updateKeyFrame(current_frame_);
+			if_update_frame = true;
+		}	
+	} else if (key == GLFW_KEY_SPACE && action != GLFW_RELEASE) {
+		if (current_frame_ != -1) {
+			mesh_->spaceKeyFrame(current_frame_);
+		}	
+	} else if (key == GLFW_KEY_L && (mods & GLFW_MOD_CONTROL)) {
+		if (action == GLFW_RELEASE)
+			int a = mesh_->saveCustomAnimationTo();
+		return ;
+	} else if (key == GLFW_KEY_Z && action != GLFW_RELEASE) {
+		if_cursor = !if_cursor;
+		std::cout << if_cursor << std::endl;
+	} else if (key == GLFW_KEY_I && action != GLFW_RELEASE) {
+		if (if_cursor && current_frame_ >= 0){
+			mesh_->insertKeyFrame(current_frame_);
+			if_insert_frame = true;
+			std::cout << if_insert_frame << std::endl;
+		}
+	} else if (key == GLFW_KEY_V && action != GLFW_RELEASE) {
+		if (!isPlaying()) {
+			play_ = true;
+			timer_ = tic();
+			time_ = 0.0;
+			if_save_video = true;
+		} else {
+			play_ = false;
+		}
+	} else if (key == GLFW_KEY_N && action != GLFW_RELEASE) {
+		mesh_->setSpline(!(mesh_->isSpline()));
 	}
 }
 
@@ -242,8 +287,33 @@ void GUI::mousePosCallback(double mouse_x, double mouse_y)
 	float delta_y = current_y_ - last_y_;
 	if (sqrt(delta_x * delta_x + delta_y * delta_y) < 1e-15)
 		return;
+
+	bool drag_scroll = if_drag_scroll && current_button_ == GLFW_MOUSE_BUTTON_LEFT;
+	if (drag_scroll) {
+		if (mesh_->previews.size() <= 3) {
+			return;
+		} else {
+			int total_height = mesh_->previews.size() * preview_height_;
+			int top = (total_height - frame_shift_)/total_height * window_height_;
+			int bottom = (total_height - frame_shift_ - window_height_)/total_height * window_height_;
+			if (current_y_ > bottom && current_y_ < top) {
+				int max_shift = preview_height_ * mesh_->key_frames.size() - window_height_;
+				float delta = delta_y / window_height_ * total_height;
+				if (frame_shift_ - delta >=0 && (int)frame_shift_<= max_shift ){
+					frame_shift_ -= delta;
+				} else if (frame_shift_ - delta >= 0 && delta >= 0) {
+					frame_shift_ -= delta;
+				} else {
+					return;
+				}
+			}
+		}
+	}
+
 	if (mouse_x > view_width_)
-		return ;
+	return ;
+
+
 	glm::vec3 mouse_direction = glm::normalize(glm::vec3(delta_x, delta_y, 0.0f));
 	glm::vec2 mouse_start = glm::vec2(last_x_, last_y_);
 	glm::vec2 mouse_end = glm::vec2(current_x_, current_y_);
@@ -251,7 +321,7 @@ void GUI::mousePosCallback(double mouse_x, double mouse_y)
 
 	bool drag_camera = drag_state_ && current_button_ == GLFW_MOUSE_BUTTON_RIGHT;
 	bool drag_bone = drag_state_ && current_button_ == GLFW_MOUSE_BUTTON_LEFT;
-
+	
 	if (drag_camera) {
 		glm::vec3 axis = glm::normalize(
 				orientation_ *
@@ -299,7 +369,6 @@ void GUI::mousePosCallback(double mouse_x, double mouse_y)
 		}
 		return ;
 	}
-
 	// FIXME: highlight bones that have been moused over
 	current_bone_ = -1;
 	glm::vec3 world_coord_near = glm::unProject(glm::vec3(current_x_, current_y_, 0.0f), view_matrix_ * model_matrix_, projection_matrix_, viewport);
@@ -337,15 +406,37 @@ void GUI::mouseButtonCallback(int button, int action, int mods)
 		drag_state_ = (action == GLFW_PRESS);
 		current_button_ = button;
 		return ;
+	} else if (current_x_ > window_width_ - scroll_bar_width && current_x_ < window_width_) {
+		if_drag_scroll = (action == GLFW_PRESS);
+		current_button_ = button;
 	}
 	// FIXME: Key Frame Selection
+	if (current_x_ > view_width_ && (current_x_ < view_width_ + preview_height_ *4/3) && action == GLFW_PRESS) {
+		int next_frame = floor((view_height_ + frame_shift_ - current_y_)/ preview_height_);
+		if (next_frame < 0 || next_frame >= (int)mesh_->key_frames.size()){
+			return;
+		} else {
+			current_frame_ = next_frame;
+		}
+	}
+
 }
 
 void GUI::mouseScrollCallback(double dx, double dy)
 {
-	if (current_x_ < view_width_)
+	if (current_x_ < view_width_ || current_x_ > view_width_ + preview_height_ *4/3)
 		return;
 	// FIXME: Mouse Scrolling
+	int max_shift = preview_height_ * mesh_->key_frames.size() - window_height_;
+	if (frame_shift_ -40.0f * (float)dy >= 0 && (int)frame_shift_ <= max_shift ) {
+		frame_shift_ -= 40.0f * (float)dy;
+	} else if (frame_shift_ -40.0f * (float)dy >= 0 && dy >= 0) {
+		frame_shift_ -= 40.0f * (float)dy;
+	} else {
+		return;
+	}
+	
+
 }
 
 void GUI::updateMatrices()

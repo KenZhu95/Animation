@@ -13,6 +13,12 @@
 #include <glm/gtx/transform.hpp>
 #include <mmdadapter.h>
 
+#include <FL/Fl.H>
+#include <FL/Fl_Window.H>
+#include <FL/Fl_Box.H>
+#include <FL/Fl_Input.H>
+#include <FL/Fl_Button.H>
+
 class TextureToRender;
 
 struct BoundingBox {
@@ -64,6 +70,13 @@ struct KeyFrame {
 	                        const KeyFrame& to,
 	                        float tau,
 	                        KeyFrame& target);
+	static void linear_trans(const KeyFrame& from,
+	                        const KeyFrame& to,
+	                        float tau,
+	                        KeyFrame& target);
+	static void interpolate_spline(const std::vector<KeyFrame>& key_frames, float t, KeyFrame& target);
+	static glm::fquat calculateSplineQuat(const std::vector<glm::fquat>& bone_rels, float t);
+	static glm::vec3 calculateSplineTrans(const std::vector<glm::vec3>& bone_trans, float t);
 };
 
 struct LineMesh {
@@ -167,6 +180,7 @@ struct Bone{
 struct Skeleton {
 	std::vector<Joint> joints;
 	std::vector<Bone*> bones;
+	bool if_save = false;
 
 	Configuration cache;
 
@@ -188,6 +202,11 @@ struct Skeleton {
 struct Mesh {
 	Mesh();
 	~Mesh();
+	std::string save_name;
+	// Fl_Input *save_input;
+	// Fl_Button *save_button;
+
+
 	std::vector<glm::vec4> vertices;
 	/*
 	 * Static per-vertex attrributes for Shaders
@@ -203,6 +222,7 @@ struct Mesh {
 	std::vector<glm::uvec3> faces;
 
 	std::vector<KeyFrame> key_frames;
+	std::vector<TextureToRender *> previews;
 
 	std::vector<Material> materials;
 	BoundingBox bounds;
@@ -215,16 +235,31 @@ struct Mesh {
 	void updateAnimation(float t = -1.0);
 	Bone* getBone(int bone_id);
 	void createKeyFrame();
+	void deleteKeyFrame(int frame_id);
+	void updateKeyFrame(int frame_id);
+	void spaceKeyFrame(int frame_id);
+	void insertKeyFrame(int frame_id);
+
 	void updateSkeleton(KeyFrame key_frame);
 	void updateFromRel(Joint& parent);
 
 	void saveAnimationTo(const std::string& fn);
 	void loadAnimationFrom(const std::string& fn);
+	int saveCustomAnimationTo();
+
+	bool isSpline() {
+		return if_spline_interpolate;
+	}
+
+	void setSpline(bool is) {
+		if_spline_interpolate = is;
+	}
 
 private:
 	void computeBounds();
 	void computeNormals();
 	Configuration currentQ_;
+	bool if_spline_interpolate = false;
 };
 
 
